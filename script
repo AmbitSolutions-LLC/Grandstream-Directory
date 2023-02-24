@@ -1,0 +1,100 @@
+#!/bin/bash
+
+## Copy the contents of this file into: /usr/sbin/bremendirs
+## Make it executible: chmod +x /usr/sbin/bremendirs
+## Add a cron:  5 0-23 * * * /usr/sbin/bremendirs
+
+## Please note that when you're working on grandstream phones, that you'll need to modify the PCODES. Without modifying those, this won't automatically work.
+
+#### Grandstream PCODE comments ####
+#P330: Enable Phone Book XML Download. Possible values: 0 (Disabled) / 1 (HTTP) / 2 (TFTP) / 3
+#(HTTPS); other values are ignored. The default value is 0.
+#P331: Phone Book XML Server Path. This is a string up to 256 characters that should contain a path to
+#the phonebook.xml file. It MUST be in the host/path format.
+#P332: Phone Book Download Interval (in minutes). Possible values: 0, 5 to 720; other values are
+#ignored. The default value is 0 (automatic download disabled).
+#P333: Remove Manually-edited entries on Download. Possible values: 0 (No) / 1 (Yes); other values
+#are ignored. The default value is 1.
+
+#### Typical pcode Settings will be this:
+#P330 = 2
+#P331 = IP of PBX
+#P332 = 30  --- this setting is PER MINUTE
+#P333 = 0   --- this leaves user created directory items
+#### End Typical Pcode settings ###
+
+#### End Grandstream PCODE comments ####
+
+
+## This script access the users table in SQL and extracts the exten & name
+## Those two values are used to populate an XML file that is loaded to /tftpboot
+## Configure clearly devices to use this script
+
+#Ambit Custom Directories
+#EXCLIS1 -> This is a manually loaded list of extensions
+DIR01=/usr/local/ambitgrandstreamdir
+INITD01=${DIR01}/tmp1
+INITD02=${DIR02}/tmp2
+# Grandstream requires the phonebook to use the name "phonebook.xml" and using any other will get rejected
+# If you have to, nest this in a directory if you need more than one phonebook.
+TMPDIR1=${DIR01}/phonebook.xml
+EXCLIS1=${DIR01}/ExclusionList
+FINALD1=/tftpboot
+
+#Make Dir if it doesn't exist
+mkdir -p $DIR01
+
+#Create tmp file if it doesn't exist
+touch $INITD01 $TMPDIR1 $EXCLIS1
+
+# Obtain ext,name data and write to file
+mysql -u root -D asterisk -NB -e "select extension, name from users" | sort -k2 > $INITD02
+
+# sort the content
+cat $INITD02 | sort -k3 -k2 > $INITD01
+
+# Remove rows of data based on the Exclusion list
+while read -r ext; do
+        sed -i "/$ext/d" $INITD01
+        grep $ext $INITD01
+done < $EXCLIS1
+
+# Create headers for temp file
+echo '<?xml version="1.0" encoding="UTF-8"?>' >> $TMPDIR1
+echo '<AddressBook>' >> $TMPDIR1
+
+#while IFS=\t, read -r ext name; do
+while read -r ext name; do
+        firstname1=""
+        lastname1=""
+        firstname1=$( echo "$name" | awk -F ' ' '{ print $1 }' )
+        lastname1=$(  echo "$name" | cut -f 2- -d ' ')
+        if [[ "${firstname1}" == "${lastname1}" ]]
+                then firstname1=' '
+                else :
+        fi
+        echo "<Contact>" >> $TMPDIR1
+        echo "<LastName>${lastname1}</LastName>" >> $TMPDIR1
+        echo "<FirstName>${firstname1}</FirstName>" >> $TMPDIR1
+        echo "<Phone>" >> $TMPDIR1
+        echo "<phonenumber>${ext}</phonenumber>" >> $TMPDIR1
+        echo "<accountindex>1</accountindex>" >> $TMPDIR1
+        echo "</Phone>" >> $TMPDIR1
+        echo "<Groups>" >> $TMPDIR1
+        echo "<groupid>0</groupid>" >> $TMPDIR1
+        echo "</Groups>" >> $TMPDIR1
+        echo "</Contact>" >> $TMPDIR1
+done <$INITD01
+
+
+# add trailers
+echo '</AddressBook>' >> $TMPDIR1
+
+# Chown the file so that asterisk can handle it
+chown asterisk:asterisk $TMPDIR1
+
+# create directory file in /tftpboot
+mv $TMPDIR1 $FINALD1/phonebook.xml
+
+#cleanup temp files
+rm $INITD01 $INITD02
